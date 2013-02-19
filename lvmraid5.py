@@ -13,6 +13,7 @@
 import argparse
 import logging
 import math
+import os
 import re
 import subprocess
 import sys
@@ -86,7 +87,7 @@ class HardDrive(LvmRaidBaseClass):
     fdisk_main_prompt_re = re.compile('Command.*\:')
     fdisk_size_re = re.compile('Disk.*\,\s(?P<size>[0-9]+)\sbytes')
     fdisk_partition_list_re = re.compile(
-        '^\s*(?P<num>[0-9]+)\s+(?P<start>[0-9]+)\s+(?P<end>[0-9]+)\s+(?P<blocks>[0-9]+)\s+(?P<id>[^\s]+).*$')
+        '(?P<name>\S*(?P<num>[0-9]+))\s+(?P<start>[0-9]+)\s+(?P<end>[0-9]+)\s+(?P<blocks>[0-9]+)\s+(?P<id>\S+).*')
  
     @classmethod
     def find_or_create(cls, name, child_cls=None):
@@ -176,6 +177,7 @@ class HardDrive(LvmRaidBaseClass):
     
     def get_info(self):
         """Extracts info for the hard drive."""
+        self.log('Refreshing info')
         # Spawn fdisk.  If this fails, that likely indicates the drive isn't
         # present.
         fdisk = self.spawn_fdisk()
@@ -198,11 +200,13 @@ class HardDrive(LvmRaidBaseClass):
         self.partitions = {}
         for groups in HardDrive.fdisk_partition_list_re.findall(output):
             self.empty = False
-            if groups[4] == "5": # Extended.
+            if groups[5] == "5": # Extended.
                 self.partitions_initialized = True
-            elif groups[4] == "fd":
-                self.partitions[groups[0]] = Partition.find_or_create(groups[0])
-                self.partitions[groups[0]].num_blocks = groups[3]
+            elif groups[5] == "fd":
+                self.log('Found partition match {}'.format(groups))
+                part = Partition.find_or_create(groups[0])
+                part.num_blocks = groups[4]
+                self.partitions[int(groups[1])] = part
                 
         # Quit
         fdisk.sendline('q')
@@ -218,7 +222,7 @@ class HardDrive(LvmRaidBaseClass):
     def spawn_fdisk(self):
         return pexpect.spawn('fdisk {}'.format(self.name),
                              timeout=5,
-                             logfile=file('lvmraid.log', 'a'))
+                             logfile=file('/tmp/lvmraid5_pexpect.log', 'a'))
         
 class Partition(LvmRaidBaseClass):
     """Represents a partition.
@@ -388,11 +392,9 @@ class RaidArray(LvmRaidBaseClass):
     @classmethod
     def next_free_name(cls):
         """Return the next available name for a raid array."""
-        output = run_cmd(['ls', '-l', '/dev/md*'])
         ii = 0
         while True:
-            name = '/dev/md{}'.format(ii)
-            if re.search(name, output):
+            if not os.path.exists('/dev/md{}'.format(ii)):
                 return name
             ii = ii + 1
     
@@ -416,6 +418,9 @@ class RaidArray(LvmRaidBaseClass):
             ret_str += '{}\n'.format(device)
         
     def create(self, members):
+        """Create a new RAID5 array."""
+        self.log('Creating RAID5 array with members {}'.format(members))
+        
         # TODO: check the array doesn't exist.
         
         # Create the array.  This will resync in the background.
@@ -605,17 +610,21 @@ class LvmRaidExec:
         while True: # TODO: pythonize
             members = ([drive.partitions[part_num] for drive in drives.values()
                         if drive.partitions.has_key(part_num)])
+            self.log('Have members {}'.format(members))
             if len(members) < 2:
                 # We're done.
                 break
             
             # Create the RAID array.
             array = RaidArray.find_or_create()
-            array.create(members)   
+            array.create(members)
             
             # And now the LVM PV.
             pvs[array.name] = PhysicalVolume.find_or_create(array.name)
             pvs[array.name].create()
+            
+            # Move onto the next partition
+            part_num += 1
         
         # Now that we've got some PVs, create an VG from them.
         self.log('Creating Volume Group...', logging.INFO)

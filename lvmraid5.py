@@ -22,14 +22,6 @@ import sys
 # helpful errors.
 import pexpect
 
-def run_cmd(cmd, stderr_to_console=False):
-    #logging.debug('Running command: {}'.format(cmd))
-    if stderr_to_console:
-        output = subprocess.check_output(cmd)
-    else:
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-    return output
-
 def check_critical(condition, msg):
     """Check that a condition is true, exiting with error message if not."""
     if not condition:
@@ -78,9 +70,25 @@ class LvmRaidBaseClass(object):
         self.logger_adapter = logging.LoggerAdapter(
             logging.getLogger(''),
             { 'class_name' : self.__class__.__name__, 'instance_name' : self.name })
+        
+    def __str__(self):
+        """The default string method is to just return the name."""
+        return self.name
 
     def log(self, msg, level=logging.DEBUG):
         self.logger_adapter.log(level, msg)
+        
+    def run_cmd(self, cmd):
+        # Run the command.  TODO: capture output on failures.
+        output = ""
+        try:
+            output = subprocess.check_output(cmd,
+                                             stderr=subprocess.STDOUT)
+            self.log("""Running command "{}":\n{}""".format(cmd, output))
+        except subprocess.CalledProcessError:
+            self.log("""Command failed "{}":\n{}""".format(cmd, output))
+            raise
+        return output
 
 class HardDrive(LvmRaidBaseClass):
     """Represents a physical hard drive."""
@@ -129,6 +137,9 @@ class HardDrive(LvmRaidBaseClass):
         # And write the partition to disk.
         fdisk.sendline('w')
         
+        # Wait for exit.
+        fdisk.expect(pexpect.EOF)
+        
     def create_partition(self, size):
         """Create a partition.
         
@@ -167,7 +178,10 @@ class HardDrive(LvmRaidBaseClass):
         
         # Write the partition table to disk.
         fdisk.sendline('w')
-        
+
+        # Wait for exit.
+        fdisk.expect(pexpect.EOF)
+
         # Refresh the drive info.
         self.get_info()
     
@@ -210,6 +224,9 @@ class HardDrive(LvmRaidBaseClass):
                 
         # Quit
         fdisk.sendline('q')
+
+        # Wait for exit.
+        fdisk.expect(pexpect.EOF)
         
     def size(self):
         """Returns the rounded size of the drive (in bytes).
@@ -231,34 +248,40 @@ class Partition(LvmRaidBaseClass):
     
     """
     raid_array_name_re = re.compile('')
-    partitions = {}
     
     @classmethod
     def find_or_create(cls, name):
-        if not cls.partitions.has_key(name):
-            cls.partitions[name] = Partition(name)
-        return cls.partitions[name]
+        return super(Partition, cls).find_or_create(name, cls)
     
     def __init__(self, name):
+        super(Partition, self).__init__(name)
         self.path = name
         self.array = None # The RaidArray this member is part of.
         self.drive = None # The HardDrive this member is part of.
         self.num_blocks = 0
         
+    def __str__(self):
+        return self.name
+        
     def get_info(self):
         """Check whether the partition is part of a raid array."""
         # Run suitable mdadm command.
-        output = run_cmd(['mdadm',
-                          '--examine',
-                          self.name])
+        output = self.run_cmd(['mdadm',
+                               '--examine',
+                               self.name])
         array_name = Partition.raid_array_name_re.search(output).group[0]
         self.array = RaidArray.find_or_create(array_name)
         
 class LogicalVolume(LvmRaidBaseClass):
     vg_name_re = re.compile('^\s*VG\sName\s+(?P<name>[^\s]+)', re.MULTILINE)
     lv_size_re = re.compile('^\s*LV\sSize\s+(?P<size>[^\s]+)\sGB', re.MULTILINE)
+
+    @classmethod
+    def find_or_create(cls, name):
+        return super(LogicalVolume, cls).find_or_create(name, cls)
     
     def __init__(self, name):
+        super(LogicalVolume, self).__init__(name)        
         self.name = name
         self.vg = None
         self.size = None
@@ -272,12 +295,12 @@ class LogicalVolume(LvmRaidBaseClass):
     def create(self, vg):
         """Create a logical volume, consuming the entire given VG."""
         # Create the LV.
-        run_cmd(['lvcreate',
-                 '--name',
-                 self.name,
-                 '--extents',
-                 '100%FREE',
-                 vg.name])
+        self.run_cmd(['lvcreate',
+                      '--name',
+                      self.name,
+                      '--extents',
+                      '100%FREE',
+                      vg.name])
         
         # Get info.
         self.get_info()
@@ -285,23 +308,37 @@ class LogicalVolume(LvmRaidBaseClass):
     def extend(self):
         """Extend the LV, filling all available space on its VG."""
         # Extend the LV.
-        run_cmd(['lvextend',
-                 '-l+100%FREE',
-                 self.name])
+        self.run_cmd(['lvextend',
+                      '-l+100%FREE',
+                      self.name])
         
         # Get LV info.
         self.get_info()
         
     def get_info(self):
-        output = run_cmd(["lvdisplay", self.name, "--units", "G"])
-        self.size = LogicalVolume.lv_size_re.search(output).group('size')
-        m = LogicalVolume.vg_name_re.search(output)
-        self.vg = VolumeGroup(m.group('name'))
+        """Refresh the info for the LV.
+        
+        The LV may not yet exists, so cope with lvdisplay returning
+        unsuccessfully.
+        
+        """
+        try:
+            output = self.run_cmd(["lvdisplay", self.name, "--units", "G"])
+            self.size = LogicalVolume.lv_size_re.search(output).group('size')
+            m = LogicalVolume.vg_name_re.search(output)
+            self.vg = VolumeGroup.find_or_create(m.group('name'))
+        except subprocess.CalledProcessError:
+            pass
     
 class VolumeGroup(LvmRaidBaseClass):
     pv_name_re = re.compile('^\s*PV\sName\s+(?P<name>[^\s]+)', re.MULTILINE)
     
+    @classmethod
+    def find_or_create(cls, name):
+        return super(VolumeGroup, cls).find_or_create(name, cls)
+    
     def __init__(self, name):
+        super(VolumeGroup, self).__init__(name)
         self.name = name
         self.pvs = {} # Physical volumes, keyed on name.
         self.get_info()
@@ -314,7 +351,7 @@ class VolumeGroup(LvmRaidBaseClass):
     
     def create(self, pvs):
         """Creates a VG from a list of PVs."""
-        run_cmd(['vgcreate', self.name, [pv.name for pv in pvs]])
+        self.run_cmd(['vgcreate', self.name] + [pv.name for pv in pvs])
         
         # Now populate internal fields.
         self.get_info()
@@ -331,29 +368,36 @@ class VolumeGroup(LvmRaidBaseClass):
     def extend(self, pv):
         """Extend the volume group by adding a new PV to it."""
         # Extend the VG.
-        run_cmd(['vgextend',
-                 self.name,
-                 pv.name])
+        self.run_cmd(['vgextend',
+                      self.name,
+                      pv.name])
         
         # Refresh VG info.
         self.get_info()
         
     def get_info(self):
-        output = run_cmd(["vgdisplay", self.name, "--verbose"])
-        m = VolumeGroup.pv_name_re.findall(output)
-        for name in m:
-            self.pvs[name] = PhysicalVolume.find_or_create(name)
+        """Get the info for this VG.
+        
+        The VG may not yet exist, so it's perfectly valid for vgdisplay to
+        return unsuccessful.
+        
+        """
+        try:
+            output = self.run_cmd(["vgdisplay", self.name, "--verbose"])
+            m = VolumeGroup.pv_name_re.findall(output)
+            for name in m:
+                self.pvs[name] = PhysicalVolume.find_or_create(name)
+        except subprocess.CalledProcessError:
+            pass
 
 class PhysicalVolume(LvmRaidBaseClass):
-    pvs = {}
     
     @classmethod
     def find_or_create(cls, name):
-        if not name in cls.pvs.keys():
-            cls.pvs[name] = PhysicalVolume(name)
-        return cls.pvs[name]
+        return super(PhysicalVolume, cls).find_or_create(name, cls)
     
     def __init__(self, name):
+        super(PhysicalVolume, self).__init__(name)
         self.name = name
         self.raid_array = None
         self.get_info()
@@ -364,49 +408,45 @@ class PhysicalVolume(LvmRaidBaseClass):
     def create(self):
         """Create a PV on the device with the PV's name."""
         # Nice and easy, just call pvcreate.
-        run_cmd(['pvcreate', self.name])
+        self.run_cmd(['pvcreate', self.name])
         
     def get_info(self):
         self.raid_array = RaidArray.find_or_create(self.name)
 
     def grow(self):
         # Grow the PV.
-        run_cmd(['pvresize',
-                 self.name])
+        self.run_cmd(['pvresize', self.name])
         
         # And refresh the PV information
         self.get_info()
 
 class RaidArray(LvmRaidBaseClass):
     """raid_device_re = re.compile('^\s*"""
-    arrays = {}
     
     @classmethod
     def find_or_create(cls, name=None):
         if name is None:
             name = cls.next_free_name()
-        if not name in cls.arrays.keys():
-            cls.arrays[name] = RaidArray(name)
-        return cls.arrays[name]
+        return super(RaidArray, cls).find_or_create(name, cls)            
     
     @classmethod
     def next_free_name(cls):
         """Return the next available name for a raid array."""
         ii = 0
         while True:
-            if not os.path.exists('/dev/md{}'.format(ii)):
+            name = '/dev/md{}'.format(ii)
+            if not os.path.exists(name):
                 return name
-            ii = ii + 1
+            ii += 1
     
-    def __init__(self, name=None):
+    def __init__(self, name):
         """Create a new array object.
         
         The name parameter is optional; if it is not specified the next unused
         name in the /dev/mdX sceme is used.
         
         """
-        if name is None:
-            name = RaidArray.next_free_name()
+        super(RaidArray, self).__init__(name)
         self.name = name
         self.pv = None
         self.devices = {}
@@ -424,17 +464,17 @@ class RaidArray(LvmRaidBaseClass):
         # TODO: check the array doesn't exist.
         
         # Create the array.  This will resync in the background.
-        run_cmd(['mdadm',
-                 '--create',
-                 self.name,
-                 '--level=5',
-                 '--raid-devices={}'.format(members.size),
-                 members])
+        self.run_cmd(['mdadm',
+                      '--create',
+                      self.name,
+                      '--level=5',
+                      '--raid-devices={}'.format(len(members))] +
+                      [part.name for part in members])
         
         # TODO: wait for async completion?
         
     def get_info(self):
-        output = run_cmd(["mdadm", "--detail", self.name])
+        output = self.run_cmd(["mdadm", "--detail", self.name])
         m = RaidArray.raid_device_re.findall(output)
         for device in m:
             self.devices[device] = Partition.find_or_create(device)
@@ -446,15 +486,15 @@ class RaidArray(LvmRaidBaseClass):
         check_critical(new_partition.array is None)
         
         # Grow the array.
-        run_cmd(['mdadm',
-                 self.name,
-                 '--add',
-                 new_partition.name])
-        run_cmd(['mdadm',
-                 self.name,
-                 '--grow',
-                 '--raid-devices={}'.format(self.devices.size()),
-                 '--backup-file={}'.format(backup_file)])
+        self.run_cmd(['mdadm',
+                      self.name,
+                      '--add',
+                      new_partition.name])
+        self.run_cmd(['mdadm',
+                      self.name,
+                      '--grow',
+                      '--raid-devices={}'.format(self.devices.size()),
+                      '--backup-file={}'.format(backup_file)])
         
         # Refresh array info.
         self.get_info()
@@ -468,14 +508,14 @@ class RaidArray(LvmRaidBaseClass):
         # TODO: check the array is currently clean.
         
         # Remove the drive.
-        run_cmd(['mdadm',
-                 self.name,
-                 '--fail',
-                 member.name])
-        run_cmd(['mdadm',
-                 self.name,
-                 '--remove',
-                 member.name])
+        self.run_cmd(['mdadm',
+                      self.name,
+                      '--fail',
+                      member.name])
+        self.run_cmd(['mdadm',
+                      self.name,
+                      '--remove',
+                      member.name])
         
         # Refresh info
         self.get_info()
@@ -517,10 +557,6 @@ class LvmRaidExec:
             '--vg_name',
             help="""The name of the LVM Volume Group to create (default: 
             /dev/lvmraid_vg<N>""")
-        create_parser.add_argument(
-            '--lv_name',
-            help="""The name of the LVM Logical Volume to create (default: 
-            /dev/lvmraid_lv<N>""")
         create_parser.add_argument(
             'drives_for_create',
             nargs='*',
@@ -610,7 +646,6 @@ class LvmRaidExec:
         while True: # TODO: pythonize
             members = ([drive.partitions[part_num] for drive in drives.values()
                         if drive.partitions.has_key(part_num)])
-            self.log('Have members {}'.format(members))
             if len(members) < 2:
                 # We're done.
                 break
@@ -628,13 +663,21 @@ class LvmRaidExec:
         
         # Now that we've got some PVs, create an VG from them.
         self.log('Creating Volume Group...', logging.INFO)
-        vg = VolumeGroup(self.args.vg_name)
-        vg.create(pvs)
+        vg = VolumeGroup.find_or_create(self.args.vg_name)
+        vg.create(pvs.values())
         
         # And finally create a Logical Volume on it.
         self.log('Creating Logical Volume...', logging.INFO)
-        lv = LogicalVolume(self.args.lv_name)
+        lv = LogicalVolume.find_or_create(vg.name + '/lvol0')
         lv.create(vg)
+        
+        # Log the successful completion.
+        self.log(
+            """Volume group {} has been successfully created.
+            The following RAID arrays are resyncing in the background: {}.
+            You can monitor their status by running "mdadm --detail <array_name>".
+            """.format(vg, pvs.keys()),
+            level=logging.INFO)
     
     def examine(self):
         """Examine a single logical volume.
@@ -773,6 +816,13 @@ class LvmRaidExec:
     def log(self, msg, level=logging.DEBUG):
         self.logger_adapter.log(level, msg)
     
+    def run_cmd(self, cmd):
+        # Run the command.
+        output = subprocess.check_output(cmd,
+                                         stderr=subprocess.STDOUT)
+        self.log(output)
+        return output    
+    
     def setup_logging(self):
         """Configure loggers for the program at start of day."""
         # The main handler writes DEBUG or higher messages to file.
@@ -801,8 +851,8 @@ class LvmRaidExec:
             try:
                 # Let stderr go to console - it often includes a handy
                 # one-liner telling the user how to install the dependency.
-                run_cmd(args)
-            except: # TODO: check more specific exception.
+                self.run_cmd(args)
+            except subprocess.CalledProcessError:
                 check_critical(False, 'Missing dependency: {}'.format(args[0]))
             
         self.log("Checking dependencies", logging.INFO)

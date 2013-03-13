@@ -16,8 +16,7 @@ import unittest
 # on all drives it uses.
 #
 # The drives are arranged as follows:
-# - /dev/sdb (size 1)
-# - /dev/sdc, /dev/sdd (size 2)
+# - /dev/sdb < /dev/sdc == /dev/sdd < /dev/sde 
 
 class LvmRaid5Test(unittest.TestCase):
     """Parent class containing utility functions."""
@@ -106,16 +105,23 @@ class LvmRaid5Test1(LvmRaid5Test):
         self.drive_names = ['/dev/sdb',
                             '/dev/sdc',
                             '/dev/sdd',
-                            '/dev/sde']
+                            '/dev/sde',
+                            '/dev/sdf']
         self.partitions = ['/dev/sdb5',
                            '/dev/sdc5',
                            '/dev/sdc6',
                            '/dev/sdd5',
                            '/dev/sdd6',
                            '/dev/sde5',
-                           '/dev/sde6']
+                           '/dev/sde6',
+                           '/dev/sde7',
+                           '/dev/sdf5',
+                           '/dev/sdf6',
+                           '/dev/sdf7']
         self.array_names = ['/dev/md0',
                             '/dev/md1',
+                            '/dev/md2',
+                            '/dev/md125',
                             '/dev/md126',
                             '/dev/md127']
         self.vg_name = '/dev/jjl_vg1'
@@ -142,26 +148,16 @@ class LvmRaid5Test1(LvmRaid5Test):
     def create(self):
         """Create an array."""        
         # Create an LvmRaidExec instance.
-        drives_for_create = self.drive_names[:-1]
+        drives_for_create = ['/dev/sdb',
+                             '/dev/sdc',
+                             '/dev/sdd']
         LvmRaidExec(['create',
                      '--vg_name', self.vg_name] +
                      drives_for_create)
         
         # TODO: do some checking.
         self.check_lv_exists(self.lv_name)
-        
-    def add(self):
-        """Add a new drive to the array."""
-        
-        # Add a drive to the array.  The drive is larger than any existing 
-        # members.
-        LvmRaidExec(['add',
-                     self.lv_name,
-                     '/dev/sde'])
-        
-        # Check all good.
-        self.check_lv_exists(self.lv_name)
-        
+
     def test(self):
         # Prepare the test.
         self.prepare()
@@ -169,8 +165,17 @@ class LvmRaid5Test1(LvmRaid5Test):
         # Run the create test.
         self.create()
         
-        # Run the add test.
-        self.add()
+        # Add /dev/sde to the array.
+        LvmRaidExec(['add',
+                     self.lv_name,
+                     '/dev/sde'])
+        # TODO: check LV size
+        
+        # Add /dev/sdf to the array.
+        LvmRaidExec(['add',
+                     self.lv_name,
+                     '/dev/sdf'])
+        # TODO: check LV size
 
 if __name__ == '__main__':
     unittest.main()

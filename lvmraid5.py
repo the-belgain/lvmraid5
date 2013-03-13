@@ -9,6 +9,7 @@
 # TODO: eventually, move to using the python-lvm bindings.  They don't seem
 # stable enough yet, or packaged in standard distro's.
 # TODO: make logging sane.
+# TODO: see why partprobe is necessary.
 
 import argparse
 import logging
@@ -909,13 +910,18 @@ class LvmRaidExec:
             
             member1 = new_drive.create_partition(new_array_size)
             member2 = other_drive_for_new_array.create_partition(new_array_size)
+            
+            # Again, run partprobe.
+            self.run_cmd(["partprobe"])
+            
+            # Now create the array.
             new_array = RaidArray.find_or_create()
             new_array.create([member1, member2])
             
             # Create a PV on the new array.
             pv = PhysicalVolume.find_or_create(new_array.name)
             pv.create()
-            lv.vg.extend(pv.name)
+            lv.vg.extend(pv)
         
         # Now ask the LV to grow to consume the space.
         lv.extend()

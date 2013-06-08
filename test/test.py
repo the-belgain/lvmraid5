@@ -15,8 +15,13 @@ import unittest
 # The test script must be run with root privileges.  Again, it will erase data
 # on all drives it uses.
 #
-# The drives are arranged as follows:
-# - /dev/sdb < /dev/sdc == /dev/sdd < /dev/sde 
+# The drives must be in increasing size order as follows:
+# - 1 < 2 == 3 < 4 < 5 
+drive_names = ['/dev/sdf',
+               '/dev/sdb',
+               '/dev/sdc',
+               '/dev/sdd',
+               '/dev/sde']
 
 class LvmRaid5Test(unittest.TestCase):
     """Parent class containing utility functions."""
@@ -102,22 +107,7 @@ class LvmRaid5Test(unittest.TestCase):
 class LvmRaid5Test1(LvmRaid5Test):
 
     def prepare(self):
-        self.drive_names = ['/dev/sdb',
-                            '/dev/sdc',
-                            '/dev/sdd',
-                            '/dev/sde',
-                            '/dev/sdf']
-        self.partitions = ['/dev/sdb5',
-                           '/dev/sdc5',
-                           '/dev/sdc6',
-                           '/dev/sdd5',
-                           '/dev/sdd6',
-                           '/dev/sde5',
-                           '/dev/sde6',
-                           '/dev/sde7',
-                           '/dev/sdf5',
-                           '/dev/sdf6',
-                           '/dev/sdf7']
+        self.num_arrays = 3
         self.array_names = ['/dev/md0',
                             '/dev/md1',
                             '/dev/md2',
@@ -138,22 +128,20 @@ class LvmRaid5Test1(LvmRaid5Test):
             self.delete_array(array)
             
         # Wipe the partition superblocks.
-        for partition in self.partitions:
-            self.zero_superblock(partition)
+        for drive in drive_names:
+            for ii in range(5, 5 + self.num_arrays):
+                self.zero_superblock("%s%d" % (drive, ii))
         
         # Remove any partitions from the existing drives.
-        for drive in self.drive_names:
+        for drive in drive_names:
             self.delete_partitions(drive)
 
     def create(self):
-        """Create an array."""        
+        """Create an array."""
         # Create an LvmRaidExec instance.
-        drives_for_create = ['/dev/sdb',
-                             '/dev/sdc',
-                             '/dev/sdd']
         LvmRaidExec(['create',
                      '--vg_name', self.vg_name] +
-                     drives_for_create)
+                     drive_names[0:3])
         
         # TODO: do some checking.
         self.check_lv_exists(self.lv_name)
@@ -165,16 +153,16 @@ class LvmRaid5Test1(LvmRaid5Test):
         # Run the create test.
         self.create()
         
-        # Add /dev/sde to the array.
+        # Add 4th largest drive to the array.
         LvmRaidExec(['add',
                      self.lv_name,
-                     '/dev/sde'])
+                     drive_names[3]])
         # TODO: check LV size
         
         # Add /dev/sdf to the array.
         LvmRaidExec(['add',
                      self.lv_name,
-                     '/dev/sdf'])
+                     drive_names[4]])
         # TODO: check LV size
 
 if __name__ == '__main__':

@@ -36,9 +36,13 @@ def round_sigfigs(num, sig_figs, round_down=True):
     assert(num >= 0)
     unit_size = math.pow(10, math.floor(math.log10(num)) - (sig_figs - 1))
     ret_val = long(round(num, -int(math.floor(math.log10(num)) - (sig_figs - 1))))
-    if round_down and ret_val > num:
+
+    # Make sure we're rounding down, not up.  As an additional safeguard for UT
+    # where we have small drives, make sure we've gone at least 5MB below the 
+    # actual size.
+    while round_down and ret_val > num - 5000000:
         ret_val -= unit_size
-        assert(ret_val <= num)
+
     return long(ret_val)
 
 class LvmRaidBaseClass(object):
@@ -152,7 +156,7 @@ class HardDrive(LvmRaidBaseClass):
         # Wait for exit.
         fdisk.expect(pexpect.EOF)
         
-    def create_partition(self, size):
+    def create_partition(self, size, allow_failure=False):
         """Create a partition.
         
         Expects the drive to have already been initialized with an extended
@@ -183,7 +187,7 @@ class HardDrive(LvmRaidBaseClass):
         index = fdisk.expect([HardDrive.fdisk_main_prompt_re,
                               'Value out of range'])
         if index == 0:
-            # Successfully created the partition.  Set it's type to be
+            # Successfully created the partition.  Set its type to be
             # raid-autodetect.
             fdisk.sendline('t') # Change partition type
             fdisk.expect('Partition number.*\:')
@@ -197,6 +201,8 @@ class HardDrive(LvmRaidBaseClass):
             # Not enough space to create the partition - send enter to create
             # one with the remaining space, then q to quit without writing the
             # partition table.
+            if not allow_failure:
+                check_critical(False, "Failed to create partition of size {} on {}".format(size, self.name))
             fdisk.sendline('')
             fdisk.expect(HardDrive.fdisk_main_prompt_re)
             fdisk.sendline('q')
@@ -877,7 +883,7 @@ class LvmRaidExec:
                 
         new_drive.init_partitions()
         for array in arrays:
-            member = new_drive.create_partition(array.members_size())
+            member = new_drive.create_partition(array.members_size(), allow_failure=True)
             if not member:
                 # Couldn't create the partition, which means we're out of space
                 # on the new drive.  Drop out.
@@ -896,6 +902,7 @@ class LvmRaidExec:
             for drive in lv.vg.drives().values():
                 if ((drive is not new_drive) and 
                     (drive.unallocated_size() > 0)):
+                    self.log("""Drive {} has unallocated size {}""".format(drive.name, drive.unallocated_size()))
                     assert(other_drive_for_new_array is None)
                     other_drive_for_new_array = drive
         

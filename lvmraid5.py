@@ -53,26 +53,17 @@ class LvmRaidBaseClass(object):
     Used to provide logging function.
     
     """
-    instances = {} # Keys are subclasses, values are a dictionary indexed on name.
-    
-    @classmethod
-    def find_or_create(cls, element_name, child_class):
-        if not cls.instances.has_key(child_class):
-            cls.instances[child_class] = {}
-        if not cls.instances[child_class].has_key(element_name):
-            cls.instances[child_class][element_name] = child_class(element_name)
-            cls.instances[child_class][element_name].get_info()
-        return cls.instances[child_class][element_name]
-    
-    def __init__(self, name):
+
+    def __init__(self, lvmexec, name):
         """Provides common initialization function.
         
         Called by the subclass before doing their own initialization."""
         # Assert that we didn't accidentally create the object directly rather
         # than through find_or_create().
-        assert(not LvmRaidBaseClass.instances[self.__class__].has_key(name))
+        assert(not lvmexec.child_objs[self.__class__].has_key(name))
         
         # Store the name (all subclasses must have this property).
+        self.lvmexec = lvmexec
         self.name = name
         
         # Configure a logger.
@@ -81,6 +72,10 @@ class LvmRaidBaseClass(object):
             {'class_name' : self.__class__.__name__,
              'instance_name' : self.name})
         
+    def find_or_create(self, class_name, name):
+        """Find or create an instance of this class."""
+        return self.lvmexec.find_or_create(class_name, name)
+
     def __str__(self):
         """The default string method is to just return the name."""
         return self.name
@@ -116,12 +111,8 @@ class HardDrive(LvmRaidBaseClass):
     fdisk_partition_list_re = re.compile(
         '(?P<name>\S*(?P<num>[0-9]+))\s+(?P<start>[0-9]+)\s+(?P<end>[0-9]+)\s+(?P<blocks>[0-9]+)\s+(?P<id>\S+).*')
  
-    @classmethod
-    def find_or_create(cls, name, child_class=None):
-        return super(HardDrive, cls).find_or_create(name, cls)
- 
-    def __init__(self, name):
-        super(HardDrive, self).__init__(name)
+    def __init__(self, lvmexec, name):
+        super(HardDrive, self).__init__(lvmexec, name)
         self.empty = False
         self.partitions = {} # Keys are the partition number.
         
@@ -255,7 +246,7 @@ class HardDrive(LvmRaidBaseClass):
                 self.partitions_initialized = True
             elif groups[5] == "fd":
                 self.log('Found partition match {}'.format(groups))
-                part = Partition.find_or_create(groups[0])
+                part = self.find_or_create(Partition, groups[0])
                 part.num_blocks = long(groups[4])
                 self.partitions[int(groups[1])] = part
                 
@@ -284,13 +275,9 @@ class Partition(LvmRaidBaseClass):
     """
     drive_name_re = re.compile('^(?P<name>[^0-9]+)[0-9]+')
     raid_array_name_re = re.compile('')
-    
-    @classmethod
-    def find_or_create(cls, name):
-        return super(Partition, cls).find_or_create(name, cls)
-    
-    def __init__(self, name):
-        super(Partition, self).__init__(name)
+        
+    def __init__(self, lvmexec, name):
+        super(Partition, self).__init__(lvmexec, name)
         self.path = name
         self.array = None # The RaidArray this member is part of.
         self.drive = None # The HardDrive this member is part of.
@@ -304,7 +291,7 @@ class Partition(LvmRaidBaseClass):
         """
         # Get the drive name from the partition name.
         drive_name = Partition.drive_name_re.search(self.name).group('name')
-        self.drive = HardDrive.find_or_create(drive_name)
+        self.drive = self.find_or_create(HardDrive, drive_name)
         
         # Run suitable mdadm command.
         try:
@@ -323,12 +310,8 @@ class LogicalVolume(LvmRaidBaseClass):
     vg_name_re = re.compile('^\s*VG\sName\s+(?P<name>[^\s]+)', re.MULTILINE)
     lv_size_re = re.compile('^\s*LV\sSize\s+(?P<size>[^\s]+)\sGB', re.MULTILINE)
 
-    @classmethod
-    def find_or_create(cls, name):
-        return super(LogicalVolume, cls).find_or_create(name, cls)
-    
-    def __init__(self, name):
-        super(LogicalVolume, self).__init__(name)
+    def __init__(self, lvmexec, name):
+        super(LogicalVolume, self).__init__(lvmexec, name)
         self.name = name
         self.vg = None
         self.size = None
@@ -372,7 +355,7 @@ class LogicalVolume(LvmRaidBaseClass):
             output = self.run_cmd(["lvdisplay", self.name, "--units", "G"])
             self.size = LogicalVolume.lv_size_re.search(output).group('size')
             m = LogicalVolume.vg_name_re.search(output)
-            self.vg = VolumeGroup.find_or_create(m.group('name'))
+            self.vg = self.find_or_create(VolumeGroup, m.group('name'))
         except subprocess.CalledProcessError:
             pass
         
@@ -382,12 +365,8 @@ class LogicalVolume(LvmRaidBaseClass):
 class VolumeGroup(LvmRaidBaseClass):
     pv_name_re = re.compile('^\s*PV\sName\s+(?P<name>[^\s]+)', re.MULTILINE)
     
-    @classmethod
-    def find_or_create(cls, name):
-        return super(VolumeGroup, cls).find_or_create(name, cls)
-    
-    def __init__(self, name):
-        super(VolumeGroup, self).__init__(name)
+    def __init__(self, lvmexec, name):
+        super(VolumeGroup, self).__init__(lvmexec, name)
         self.name = name
         self.pvs = {} # Physical volumes, keyed on name.
         
@@ -434,7 +413,7 @@ class VolumeGroup(LvmRaidBaseClass):
             output = self.run_cmd(["vgdisplay", self.name, "--verbose"])
             m = VolumeGroup.pv_name_re.findall(output)
             for name in m:
-                self.pvs[name] = PhysicalVolume.find_or_create(name)
+                self.pvs[name] = self.find_or_create(PhysicalVolume, name)
         except subprocess.CalledProcessError:
             pass
         
@@ -444,12 +423,8 @@ class VolumeGroup(LvmRaidBaseClass):
 
 class PhysicalVolume(LvmRaidBaseClass):
     
-    @classmethod
-    def find_or_create(cls, name):
-        return super(PhysicalVolume, cls).find_or_create(name, cls)
-    
-    def __init__(self, name):
-        super(PhysicalVolume, self).__init__(name)
+    def __init__(self, lvmexec, name):
+        super(PhysicalVolume, self).__init__(lvmexec, name)
         self.name = name
         self.raid_array = None
         
@@ -464,7 +439,7 @@ class PhysicalVolume(LvmRaidBaseClass):
     def get_info(self):
         if self.raid_array is None:
             self.raid_array = "Creating"
-            self.raid_array = RaidArray.find_or_create(self.name)
+            self.raid_array = self.find_or_create(RaidArray, self.name)
 
     def grow(self):
         # Grow the PV.
@@ -487,12 +462,6 @@ class RaidArray(LvmRaidBaseClass):
     ARRAY_STATE_RESHAPING='clean, reshaping'
     
     @classmethod
-    def find_or_create(cls, name=None):
-        if name is None:
-            name = cls.next_free_name()
-        return super(RaidArray, cls).find_or_create(name, cls)
-    
-    @classmethod
     def next_free_name(cls):
         """Return the next available name for a raid array."""
         ii = 0
@@ -502,14 +471,14 @@ class RaidArray(LvmRaidBaseClass):
                 return name
             ii += 1
     
-    def __init__(self, name):
+    def __init__(self, lvmexec, name):
         """Create a new array object.
         
         The name parameter is optional; if it is not specified the next unused
         name in the /dev/mdX sceme is used.
         
         """
-        super(RaidArray, self).__init__(name)
+        super(RaidArray, self).__init__(lvmexec, name)
         self.name = name
         self.pv = None
         self.members = {} # Partitions, keyed on partition name.
@@ -540,7 +509,7 @@ class RaidArray(LvmRaidBaseClass):
         # Initialize fields.
         if self.pv is None:
             self.pv = "Creating"
-            self.pv = PhysicalVolume.find_or_create(self.name)
+            self.pv = self.find_or_create(PhysicalVolume, self.name)
         self.devices = {}
         self.state = None
         self.op_percentage_completion = None
@@ -549,7 +518,7 @@ class RaidArray(LvmRaidBaseClass):
         try:
             output = self.run_cmd(["mdadm", "--detail", self.name])
             for groups in RaidArray.members_re.findall(output):
-                self.members[groups[1]] = Partition.find_or_create(groups[1])
+                self.members[groups[1]] = self.find_or_create(Partition, groups[1])
             # self.device_size = RaidArray.device_size_re.search(output).group('size')
             self.state = RaidArray.state_re.search(output).group('state').strip()
             self.log("Array state {}".format(self.state))
@@ -651,6 +620,9 @@ class RaidArray(LvmRaidBaseClass):
 class LvmRaidExec:
     """Represents a single invocation of the lvmraid script."""
     def __init__(self, args):
+        # Hash of child instances.
+        self.child_objs = {}
+
         # Configure logging.
         self.setup_logging()
         
@@ -756,7 +728,7 @@ class LvmRaidExec:
                        "Must have at least 2 drives for array creation")
         
         for drive_name in self.args.drives_for_create:
-            drives[drive_name] = HardDrive.find_or_create(drive_name)
+            drives[drive_name] = self.find_or_create(HardDrive, drive_name)
             check_critical(
                 drives[drive_name].empty,
                 """Drive {} is not empty - please remove existing partitions 
@@ -793,11 +765,11 @@ class LvmRaidExec:
                 break
             
             # Create the RAID array.
-            array = RaidArray.find_or_create()
+            array = self.find_or_create(RaidArray)
             array.create(members)
             
             # And now the LVM PV.
-            pvs[array.name] = PhysicalVolume.find_or_create(array.name)
+            pvs[array.name] = self.find_or_create(PhysicalVolume, array.name)
             pvs[array.name].create()
             
             # Move onto the next partition
@@ -805,20 +777,19 @@ class LvmRaidExec:
         
         # Now that we've got some PVs, create an VG from them.
         self.log('Creating Volume Group...', logging.INFO)
-        vg = VolumeGroup.find_or_create(self.args.vg_name)
+        vg = self.find_or_create(VolumeGroup, self.args.vg_name)
         vg.create(pvs.values())
         
         # And finally create a Logical Volume on it.
         self.log('Creating Logical Volume...', logging.INFO)
-        lv = LogicalVolume.find_or_create(vg.name + '/lvol0')
+        lv = self.find_or_create(LogicalVolume, vg.name + '/lvol0')
         lv.create(vg)
         
         # Log the successful completion.
         self.log(
             """Volume group {} has been successfully created.
 The following RAID arrays are resyncing in the background: {}.
-You can monitor their status by running "mdadm --detail <array_name>".
-            """.format(vg, pvs.keys()),
+You can monitor their status by running "mdadm --detail <array_name>".""".format(vg, pvs.keys()),
             level=logging.INFO)
     
     def examine(self):
@@ -830,7 +801,7 @@ You can monitor their status by running "mdadm --detail <array_name>".
         """
         self.log('Examining volume {}'.format(self.args.filesystem),
                  logging.INFO)
-        lv = LogicalVolume.find_or_create(self.args.filesystem)
+        lv = self.find_or_create(LogicalVolume, self.args.filesystem)
         print(lv)
         
     def remove(self):
@@ -842,8 +813,8 @@ You can monitor their status by running "mdadm --detail <array_name>".
         """
         # Get the info for the hard drive.  This bails if there are any
         # partitions that aren't LVM raid ones.
-        lv = LogicalVolume.find_or_create(self.args.lv)
-        drive = HardDrive.find_or_create(self.args.drive_to_remove)
+        lv = self.find_or_create(LogicalVolume, self.args.lv)
+        drive = self.find_or_create(HardDrive, self.args.drive_to_remove)
         
         for partition in drive.partitions.values():
             # It's OK to remove this drive if either it's already marked faulty,
@@ -862,8 +833,8 @@ You can monitor their status by running "mdadm --detail <array_name>".
 
     def add(self):
         """Adds a new drive to a clean array."""
-        lv = LogicalVolume.find_or_create(self.args.lv)
-        new_drive = HardDrive.find_or_create(self.args.drive_to_add)
+        lv = self.find_or_create(LogicalVolume, self.args.lv)
+        new_drive = self.find_or_create(HardDrive, self.args.drive_to_add)
 
         # Call through to common subfunction.
         self._add_replace_comn(lv, new_drive, grow=True)
@@ -871,8 +842,8 @@ You can monitor their status by running "mdadm --detail <array_name>".
     def replace(self):
         """Replace is a drive in the array."""
         # Check assumptions.
-        lv = LogicalVolume.find_or_create(self.args.lv)
-        drive_to_add = HardDrive.find_or_create(self.args.drive_to_add)
+        lv = self.find_or_create(LogicalVolume, self.args.lv)
+        drive_to_add = self.find_or_create(HardDrive, self.args.drive_to_add)
         
         # Call through to common subfunction.
         self._add_replace_comn(lv, drive_to_add, grow=False)
@@ -985,11 +956,11 @@ You can monitor their status by running "mdadm --detail <array_name>".
             self.run_cmd(["partprobe"])
             
             # Now create the array.
-            new_array = RaidArray.find_or_create()
+            new_array = self.find_or_create(RaidArray)
             new_array.create([member1, member2])
             
             # Create a PV on the new array.
-            pv = PhysicalVolume.find_or_create(new_array.name)
+            pv = self.find_or_create(PhysicalVolume, new_array.name)
             pv.create()
             lv.vg.extend(pv)
             extend_lv = True
@@ -1044,7 +1015,22 @@ You can monitor their status by running "mdadm --detail <array_name>".
         check_dependency(["mdadm", "-V"])
         check_dependency(["pvcreate", "--version"])
         check_dependency(["partprobe"])
+
+    def find_or_create(self, class_name, element_name=None):
+        """Find or create an instance of a child class"""
+        # If no name is given, call the class method to get one.
+        if element_name is None:
+            element_name = class_name.next_free_name()
+
+        # Find or create the element.
+        if not self.child_objs.has_key(class_name):
+            self.child_objs[class_name] = {}
+        if not self.child_objs[class_name].has_key(element_name):
+            self.child_objs[class_name][element_name] = class_name(self, element_name)
+            self.child_objs[class_name][element_name].get_info()
+        return self.child_objs[class_name][element_name]
     
+
 if __name__ == "__main__":
     LvmRaidExec(sys.argv[1:])
     

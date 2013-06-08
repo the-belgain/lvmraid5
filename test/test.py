@@ -22,9 +22,33 @@ drive_names = ['/dev/sdf',
                '/dev/sdc',
                '/dev/sdd',
                '/dev/sde']
+num_arrays = 3 # The maximum number of arrays created by any one test.
+vg_name = '/dev/jjl_vg1'
+lv_name = '/dev/jjl_vg1/lvol0'
 
 class LvmRaid5Test(unittest.TestCase):
     """Parent class containing utility functions."""
+
+    def prepare(self):
+        # Delete LV.
+        self.delete_lv(lv_name)
+        
+        # Delete the VG.
+        self.delete_vg(vg_name)
+        
+        # Delete md arrays and their PVs.
+        for ii in range(num_arrays):
+            self.delete_array('/dev/md%d' % ii)
+            self.delete_array('/dev/md%d' % (127-ii))
+            
+        # Wipe the partition superblocks.
+        for drive in drive_names:
+            for ii in range(5, 5 + num_arrays):
+                self.zero_superblock("%s%d" % (drive, ii))
+        
+        # Remove any partitions from the existing drives.
+        for drive in drive_names:
+            self.delete_partitions(drive)
 
     def delete_array(self, name):
         try:
@@ -104,47 +128,18 @@ class LvmRaid5Test(unittest.TestCase):
         subprocess.check_output(['lvdisplay',
                                  name])
 
-class LvmRaid5Test1(LvmRaid5Test):
 
-    def prepare(self):
-        self.num_arrays = 3
-        self.array_names = ['/dev/md0',
-                            '/dev/md1',
-                            '/dev/md2',
-                            '/dev/md125',
-                            '/dev/md126',
-                            '/dev/md127']
-        self.vg_name = '/dev/jjl_vg1'
-        self.lv_name = '/dev/jjl_vg1/lvol0'
-       
-        # Delete LV.
-        self.delete_lv(self.lv_name)
-        
-        # Delete the VG.
-        self.delete_vg(self.vg_name)
-        
-        # Delete md arrays and their PVs.
-        for array in self.array_names:
-            self.delete_array(array)
-            
-        # Wipe the partition superblocks.
-        for drive in drive_names:
-            for ii in range(5, 5 + self.num_arrays):
-                self.zero_superblock("%s%d" % (drive, ii))
-        
-        # Remove any partitions from the existing drives.
-        for drive in drive_names:
-            self.delete_partitions(drive)
+class LvmRaid5Test1(LvmRaid5Test):
 
     def create(self):
         """Create an array."""
         # Create an LvmRaidExec instance.
         LvmRaidExec(['create',
-                     '--vg_name', self.vg_name] +
+                     '--vg_name', vg_name] +
                      drive_names[0:3])
         
         # TODO: do some checking.
-        self.check_lv_exists(self.lv_name)
+        self.check_lv_exists(lv_name)
 
     def test(self):
         # Prepare the test.
@@ -155,15 +150,45 @@ class LvmRaid5Test1(LvmRaid5Test):
         
         # Add 4th largest drive to the array.
         LvmRaidExec(['add',
-                     self.lv_name,
+                     lv_name,
                      drive_names[3]])
         # TODO: check LV size
         
         # Add /dev/sdf to the array.
         LvmRaidExec(['add',
-                     self.lv_name,
+                     lv_name,
                      drive_names[4]])
         # TODO: check LV size
 
+
+class LvmRaid5Test2(LvmRaid5Test):
+
+    def create(self):
+        """Create an array."""
+        # Create an LvmRaidExec instance.
+        LvmRaidExec(['create',
+                     '--vg_name', vg_name] +
+                     drive_names[0:3])
+        
+        # TODO: do some checking.
+        self.check_lv_exists(lv_name)
+
+    def test(self):
+        # Prepare the test.
+        self.prepare()
+        
+        # Create an array with 3 elements.
+        self.create()
+
+        # Remove the smallest drive.
+        LvmRaidExec(['remove',
+                      drive_names[0]])
+
+        # Replace the removed drive with a larger one.
+        LvmRaidExec(['replace',
+                      lv_name,
+                      drive_names[3]])
+
+        
 if __name__ == '__main__':
     unittest.main()

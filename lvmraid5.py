@@ -10,6 +10,7 @@
 # stable enough yet, or packaged in standard distro's.
 # TODO: make logging sane.
 # TODO: see why partprobe is necessary.
+# TODO: sort out use of globals.
 
 import argparse
 import logging
@@ -698,7 +699,7 @@ class LvmRaidExec:
         # Handle the remove command.
         remove_parser = subparsers.add_parser(
             'remove',
-            help="""Remove a given drive from an existing array.
+            help="""Remove a given drive from an existing array, leaving the array degraded.
             This command checks that no data loss will occur as a result of the
             operation, and disallows the operation otherwise.""")
         remove_parser.add_argument('drive_to_remove',
@@ -708,9 +709,8 @@ class LvmRaidExec:
         # Parser for the replace command.
         replace_parser = subparsers.add_parser(
             'replace',
-            help="""Replace an existing (possibly faulty) drive in an array 
-            with a new one.  This is equivalent to 'remove' followed by 'add'.
-            """)
+            help="""Replace an array member (either faulty or removed) 
+            with a new one.""")
         replace_parser.add_argument(
             'lv',
             help='The Logical Volume to add the drive to')

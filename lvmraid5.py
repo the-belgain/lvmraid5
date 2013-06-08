@@ -563,19 +563,27 @@ class RaidArray(LvmRaidBaseClass):
             # perfectly valid.
             pass
 
-    def grow(self, new_partition, backup_file):
-        """Grow the array by adding a new partition to it."""
+    def add(self, new_partition):
+        """Add a drive to the array."""
         assert(new_partition.array is None)
-        
-        # Grow the array.
         self.run_cmd(['mdadm',
                       self.name,
                       '--add',
                       new_partition.name])
+
+        # Wait for async completion.
+        self.wait_for_resync_complete()
+
+    def grow(self, backup_file):
+        """Grow the array onto an already added spare partition."""
+        
+        # Grow the array.  Note that the info for this array has been refreshed
+        # since the add, so the new drive is already included in the member
+        # count.
         self.run_cmd(['mdadm',
                       self.name,
                       '--grow',
-                      '--raid-devices={}'.format(len(self.members) + 1),
+                      '--raid-devices={}'.format(len(self.members)),
                       '--backup-file={}'.format(backup_file)])
         
         # Wait for async completion.
@@ -717,6 +725,11 @@ class LvmRaidExec:
             help="""Replace an array member (either faulty or removed) 
             with a new one.""")
         replace_parser.add_argument(
+            '--mdadm-backup-file',
+            default='/tmp/lvmraid5_mdadm_backup_file.txt',
+            help="""Backup file for mdadm to use.  This should be on a physical
+            drive other than the array.""")
+        replace_parser.add_argument(
             'lv',
             help='The Logical Volume to add the drive to')
         replace_parser.add_argument('drive_to_add',
@@ -848,17 +861,37 @@ class LvmRaidExec:
                     pv.raid_array.remove_member(partition)
 
     def add(self):
-        """Add a new drive to an array, increasing the total number of drives
-        in it.
-        
-        This assumes the array is currently clean.  To replace a failed drive,
-        the replace() method is used.
-        
-        """
+        """Adds a new drive to a clean array."""
         lv = LogicalVolume.find_or_create(self.args.lv)
         new_drive = HardDrive.find_or_create(self.args.drive_to_add)
+
+        # Call through to common subfunction.
+        self._add_replace_comn(lv, new_drive, grow=True)
+
+    def replace(self):
+        """Replace is a drive in the array."""
+        # Check assumptions.
+        lv = LogicalVolume.find_or_create(self.args.lv)
+        drive_to_add = HardDrive.find_or_create(self.args.drive_to_add)
+        
+        # Call through to common subfunction.
+        self._add_replace_comn(lv, drive_to_add, grow=False)
+
+    def _add_replace_comn(self, lv, new_drive, grow):
+        """Common function used by replace and add modes, as processing is very similar.
+
+        If grow is False then the array must be degraded, and the total number
+        of drives in the array doesn't change.
+
+        If grow is True then the array must be clean, and the total number of
+        drives in the array is increased by one.
+        
+        """
+        assert(lv is not None)
+        assert(new_drive is not None)
         other_drive_for_new_array = None
         existing_drive_sizes = set()
+        extend_lv = False
         
         # Check that the new drive doesn't have anything on it.
         check_critical(
@@ -877,6 +910,9 @@ class LvmRaidExec:
                        existing drives, or be larger than all existing 
                        drives.""")
 
+        # TODO: Check that in non-grow mode, the drive is large enough to make
+        # the array clean.
+
         # Spin through the existing arrays on the LV, creating partitions of the 
         # corresponding size on the drive.  We want to spin through the arrays
         # in order of the number of drives in them (largest to smallest).
@@ -886,8 +922,12 @@ class LvmRaidExec:
         self.log("Existing array sizes: {}".format(
                                     [array.members_size() for array in arrays]))
         
-        # The LV must be clean.  It may be resyncing at the moment, so wait.
-        lv.wait_for_resync_complete()
+        if grow:
+            # The LV must be clean.  It may be resyncing at the moment, so wait.
+            lv.wait_for_resync_complete()
+        else:
+            # TODO: check it isn't clean
+            pass
                 
         new_drive.init_partitions()
         for array in arrays:
@@ -899,12 +939,27 @@ class LvmRaidExec:
             self.log("""Adding {} to array {}""".format(member, array),
                      level=logging.INFO)
             
+            # Check whether this RAID array was clean before the add.  If it
+            # was then we're adding this partition as a spare, so the array
+            # can grow.
+            # TODO: shouldn't need to refresh info here, remove once this is updated
+            # to not have global state.
+            array.get_info()
+            array_was_clean = array.is_clean()
+
             # For some reason the created partition sometimes doesn't appear.
             # Running partprobe solves it (though shouldn't be necessary).
             self.run_cmd(["partprobe"])
-            array.grow(member, self.args.mdadm_backup_file)
-            array.pv.grow()
-        
+
+            # Now add the drive.
+            array.add(member)
+
+            # If we've been asked to grow the array, do so.
+            if array_was_clean:
+                array.grow(self.args.mdadm_backup_file)
+                array.pv.grow()
+                extend_lv = True
+            
         # Now check whether we can create a new array.
         if new_drive.unallocated_size() > 0:
             for drive in lv.vg.drives().values():
@@ -937,43 +992,12 @@ class LvmRaidExec:
             pv = PhysicalVolume.find_or_create(new_array.name)
             pv.create()
             lv.vg.extend(pv)
+            extend_lv = True
         
-        # Now ask the LV to grow to consume the space.
-        lv.extend()
+        if extend_lv:
+            # Now ask the LV to grow to consume the space.
+            lv.extend()
         
-    def replace(self):
-        """Replace is a drive in the array.
-        
-        Assumes the array is degraded.  Depending on the new drive size, this
-        might increase the array size or not.
-        
-        """
-        # Check assumptions.
-        lv = LogicalVolume.find_or_create(self.args.lv)
-        drive_to_add = HardDrive.find_or_create(self.args.drive_to_add)
-        
-        # Get the largest drive in this LV.
-        existing_drives = {}
-        for pv in lv.vg.pvs.values():
-            for part in pv.raid_array.members.values():
-                if ((largest_drive is None) or 
-                    (largest_drive.size() < part.drive.size())):
-                    largest_drive = part.drive
-        
-        drives_by_size = sorted()
-        
-        # Spin through the arrays on the LV.  Ordering?
-        for pv in lv.vg.pvs.values():
-            array = pv.raid_array
-            
-        # We're now added the drive to all degraded arrays.  Can we make a
-        # new one?
-        
-        
-        
-        
-        pass
-    
     def log(self, msg, level=logging.DEBUG):
         self.logger_adapter.log(level, msg)
     

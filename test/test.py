@@ -182,6 +182,7 @@ class LvmRaid5Test2(LvmRaid5Test):
 
         # Remove the smallest drive.
         LvmRaidExec(['remove',
+                      lv_name,
                       drive_names[0]])
 
         # Replace the removed drive with a larger one.

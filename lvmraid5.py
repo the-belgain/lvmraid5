@@ -11,6 +11,7 @@
 # TODO: make logging sane.
 # TODO: see why partprobe is necessary.
 # TODO: sort out use of globals.
+# TODO: use "mdadm --wait" to wait for resync.
 
 import argparse
 import logging
@@ -597,6 +598,7 @@ class RaidArray(LvmRaidBaseClass):
         
         """
         # TODO: check the array is currently clean.
+        self.log("Removing {} from array {}".format(member.name, self.name))
         
         # Remove the drive.
         self.run_cmd(['mdadm',
@@ -702,6 +704,9 @@ class LvmRaidExec:
             help="""Remove a given drive from an existing array, leaving the array degraded.
             This command checks that no data loss will occur as a result of the
             operation, and disallows the operation otherwise.""")
+        remove_parser.add_argument(
+            'lv',
+            help='The Logical Volume to remove the drive from')
         remove_parser.add_argument('drive_to_remove',
                                    help='The drive to remove (eg. /dev/sda)')
         remove_parser.set_defaults(func=self.remove)
@@ -816,7 +821,7 @@ class LvmRaidExec:
         print(lv)
         
     def remove(self):
-        """Remove a physical drive from the system.
+        """Remove a physical drive from an array.
         
         This checks that all partitions on the physical drive are either
         part of a redundant array, or are unused.
@@ -824,6 +829,7 @@ class LvmRaidExec:
         """
         # Get the info for the hard drive.  This bails if there are any
         # partitions that aren't LVM raid ones.
+        lv = LogicalVolume.find_or_create(self.args.lv)
         drive = HardDrive.find_or_create(self.args.drive_to_remove)
         
         for partition in drive.partitions.values():
@@ -836,8 +842,10 @@ class LvmRaidExec:
                                .format(partition, partition.array))
             
         # We're good to remove the drive.  Remove it from each array in turn.
-        for raid_member in drive.raid_members.vaules():
-            raid_member.remove_from_array()
+        for partition in drive.partitions.values():
+            for pv in lv.vg.pvs.values():
+                if partition in pv.raid_array.members.values():
+                    pv.raid_array.remove_member(partition)
 
     def add(self):
         """Add a new drive to an array, increasing the total number of drives

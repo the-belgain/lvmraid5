@@ -816,8 +816,8 @@ class LvmRaidExec:
         # Log the successful completion.
         self.log(
             """Volume group {} has been successfully created.
-            The following RAID arrays are resyncing in the background: {}.
-            You can monitor their status by running "mdadm --detail <array_name>".
+The following RAID arrays are resyncing in the background: {}.
+You can monitor their status by running "mdadm --detail <array_name>".
             """.format(vg, pvs.keys()),
             level=logging.INFO)
     

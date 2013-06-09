@@ -32,7 +32,7 @@ def check_critical(condition, msg):
         raise LvmRaidException(msg)
 
 
-def round_sigfigs(num, sig_figs, round_down=True):
+def round_sigfigs(num, sig_figs, round_down, round_down_more):
     """Round to specified number of sigfigs."""
     assert(sig_figs != 0)
     assert(num >= 0)
@@ -42,8 +42,11 @@ def round_sigfigs(num, sig_figs, round_down=True):
     # Make sure we're rounding down, not up.  As an additional safeguard for UT
     # where we have small drives, make sure we've gone at least 5MB below the 
     # actual size.
-    while round_down and ret_val > num - 5000000:
+    if round_down:
         ret_val -= unit_size
+    elif round_down_more:
+        while ret_val > num - 5000000:
+            ret_val -= unit_size
 
     return long(ret_val)
 
@@ -224,7 +227,13 @@ class HardDrive(LvmRaidBaseClass):
         used_size = 0
         for part in self.partitions.values():
             used_size += part.size()
-        assert(used_size <= self.size())
+        assert(used_size <= self.size() + 5000000)
+
+        # If the unallocated size is less than 5% of the total size, treat it
+        # as rounding error.
+        if used_size > 0.95 * self.size():
+            used_size = self.size()
+
         return (self.size() - used_size)
     
     def get_info(self):
@@ -272,7 +281,7 @@ class HardDrive(LvmRaidBaseClass):
         Round down two significant figures.
         
         """
-        return round_sigfigs(self.size_in_bytes, 2)
+        return round_sigfigs(self.size_in_bytes, 2, round_down=False, round_down_more=True)
     
     def spawn_fdisk(self):
         return self.spawn_pexpect('fdisk {}'.format(self.name))
@@ -314,7 +323,8 @@ class Partition(LvmRaidBaseClass):
             pass
         
     def size(self):
-        return round_sigfigs(self.num_blocks * 1024, 2, round_down=False)
+        next_up = (self.num_blocks + 1) * 1024
+        return (next_up - (next_up % 1000))
         
 class LogicalVolume(LvmRaidBaseClass):
     vg_name_re = re.compile('^\s*VG\sName\s+(?P<name>[^\s]+)', re.MULTILINE)
@@ -463,7 +473,7 @@ class PhysicalVolume(LvmRaidBaseClass):
 
 class RaidArray(LvmRaidBaseClass):
     members_re = re.compile(
-        '^(\s*[0-9]+){4}[^/]*(?P<name>\S*)$', re.MULTILINE)
+        '^(\s*[0-9]+){4}[^/]*(?P<name>/\S+)$', re.MULTILINE)
     state_re = re.compile('State\s*\:\s*(?P<state>.*)$', re.MULTILINE)
     rebuild_percentage_re = re.compile(
         'Rebuild\sStatus[^0-9]*(?P<percentage>[0-9]+)', re.MULTILINE)
@@ -749,7 +759,7 @@ class LvmRaidExec:
         prev_size = 0
         for size in sorted(drive_sizes):
             array_sizes += [size - prev_size]
-            prev_size = size     
+            prev_size = size
         self.log('Creating arrays with sizes: {}'.format(array_sizes),
                  logging.INFO)
         
@@ -866,7 +876,6 @@ You can monitor their status by running "mdadm --detail <array_name>".""".format
         assert(lv is not None)
         assert(new_drive is not None)
         other_drive_for_new_array = None
-        existing_drive_sizes = set()
         extend_lv = False
         
         # Check that the new drive doesn't have anything on it.
@@ -874,20 +883,6 @@ You can monitor their status by running "mdadm --detail <array_name>".""".format
             new_drive.empty,
             'New drive {} is not empty.'.format(self.args.drive_to_add))
         
-        # Build up the list of drive sizes.
-        for drive in lv.vg.drives().values():
-            existing_drive_sizes.add(drive.size())
-        largest_drive_size = max(existing_drive_sizes)
-        self.log("New drive size: {}".format(new_drive.size()))
-        self.log("LV drives sizes: {}".format(existing_drive_sizes))
-        check_critical((new_drive.size() > largest_drive_size) or
-                       (new_drive.size() in existing_drive_sizes),
-                       """New drive capacity must either match one of the 
-existing drives, or be larger than all existing drives.""")
-
-        # TODO: Check that in non-grow mode, the drive is large enough to make
-        # the array clean.
-
         # Spin through the existing arrays on the LV, creating partitions of the 
         # corresponding size on the drive.  We want to spin through the arrays
         # in order of the number of drives in them (largest to smallest).
@@ -896,13 +891,36 @@ existing drives, or be larger than all existing drives.""")
                         reverse=True)
         self.log("Existing array sizes: {}".format(
                                     [array.members_size() for array in arrays]))
-        
+
+        # Check whether the drive matches one of the existing drives.
+        size = 0
+        drive_matches = False
+        for array in arrays:
+            size += array.members_size()
+            if new_drive.size() == size:
+                drive_matches = True
+
+        # We currently don't support adding randomly-sized drives.
+        check_critical((new_drive.size() > size) or drive_matches,
+"""New drive capacity must either match one of the existing arrays, or be 
+larger than all existing arrays.""")
+
         if grow:
             # The LV must be clean.  It may be resyncing at the moment, so wait.
             lv.wait_for_resync_complete()
         else:
-            # TODO: check it isn't clean
-            pass
+            # Spin through the unclean arrays, checking that:
+            # - there's at least one unclean array
+            # - the drive being added is large enough to be added to all the
+            #   unclean arrays.
+            unclean_size = 0
+            for array in arrays:
+                if not array.is_clean():
+                    unclean_size += array.members_size()
+            check_critical(unclean_size != 0,
+"""The LV is clean; cannot replace drive in it.""")
+            check_critical(unclean_size <= new_drive.size(),
+"""The LV needs a drive of size at least {} to make the array clean.""".format(unclean_size))
                 
         new_drive.init_partitions()
         for array in arrays:

@@ -16,12 +16,17 @@ import unittest
 # on all drives it uses.
 #
 # The drives must be in increasing size order as follows:
-# - 1 < 2 == 3 < 4 < 5 
+# - 0 == 1 < 2 == 3 < 4 == 5 < 6 == 7 < 8 == 9
 drive_names = ['/dev/sdf',
+               '/dev/sdg',
                '/dev/sdb',
                '/dev/sdc',
                '/dev/sdd',
-               '/dev/sde']
+               '/dev/sdh',
+               '/dev/sdj',
+               '/dev/sdk',
+               '/dev/sde',
+               '/dev/sdi']
 num_arrays = 3 # The maximum number of arrays created by any one test.
 vg_name = '/dev/jjl_vg1'
 lv_name = '/dev/jjl_vg1/lvol0'
@@ -29,21 +34,13 @@ lv_name = '/dev/jjl_vg1/lvol0'
 class LvmRaid5Test(unittest.TestCase):
     """Parent class containing utility functions."""
 
-    def prepare(self):
-        # Delete LV.
-        self.delete_lv(lv_name)
-        
-        # Delete the VG.
-        self.delete_vg(vg_name)
-        
-        # Delete md arrays and their PVs.
-        for ii in range(num_arrays):
-            self.delete_array('/dev/md%d' % ii)
-            self.delete_array('/dev/md%d' % (127-ii))
-            
-        # Wipe the drives.
-        for drive in drive_names:
-            self.wipe_drive(drive)
+    def setUp(self):
+        """Called by the unittest framework before every script."""
+        self._prepare()
+
+    def tearDown(self):
+        """Called by the unittest framework after every script."""
+        # self._prepare()
 
     def wipe_drive(self, drive):
         """Wipe a drive completely."""
@@ -132,6 +129,21 @@ class LvmRaid5Test(unittest.TestCase):
         subprocess.check_output(['lvdisplay',
                                  name])
 
+    def _prepare(self):
+        # Delete LV.
+        self.delete_lv(lv_name)
+        
+        # Delete the VG.
+        self.delete_vg(vg_name)
+        
+        # Delete md arrays and their PVs.
+        for ii in range(num_arrays):
+            self.delete_array('/dev/md%d' % ii)
+            
+        # Wipe the drives.
+        for drive in drive_names:
+            self.wipe_drive(drive)
+
 
 class LvmRaid5Test1(LvmRaid5Test):
 
@@ -140,28 +152,25 @@ class LvmRaid5Test1(LvmRaid5Test):
         # Create an LvmRaidExec instance.
         LvmRaidExec(['create',
                      '--vg_name', vg_name] +
-                     drive_names[0:3])
+                     [drive_names[0], drive_names[2] + drive_names[4]])
         
         # TODO: do some checking.
         self.check_lv_exists(lv_name)
 
     def test(self):
-        # Prepare the test.
-        self.prepare()
-        
         # Run the create test.
         self.create()
         
         # Add 4th largest drive to the array.
         LvmRaidExec(['add',
                      lv_name,
-                     drive_names[3]])
+                     drive_names[6]])
         # TODO: check LV size
         
         # Add /dev/sdf to the array.
         LvmRaidExec(['add',
                      lv_name,
-                     drive_names[4]])
+                     drive_names[7]])
         # TODO: check LV size
 
 
@@ -172,15 +181,12 @@ class LvmRaid5Test2(LvmRaid5Test):
         # Create an LvmRaidExec instance.
         LvmRaidExec(['create',
                      '--vg_name', vg_name] +
-                     drive_names[0:3])
+                     drive_names[0:1] + drive_names[2:4])
         
         # TODO: do some checking.
         self.check_lv_exists(lv_name)
 
     def test(self):
-        # Prepare the test.
-        self.prepare()
-        
         # Create an array with 3 elements.
         self.create()
 
@@ -192,7 +198,7 @@ class LvmRaid5Test2(LvmRaid5Test):
         # Replace the removed drive with a larger one.
         LvmRaidExec(['replace',
                       lv_name,
-                      drive_names[3]])
+                      drive_names[4]])
 
         
 class LvmRaid5Test3(LvmRaid5Test):
@@ -204,31 +210,61 @@ class LvmRaid5Test3(LvmRaid5Test):
     """
 
     def test(self):
-        # Prepare the test.
-        self.prepare()
-        
         # Create an LvmRaidExec instance.
         LvmRaidExec(['create',
                      '--vg_name', vg_name] +
-                     drive_names[1:4])
+                     [drive_names[0], drive_names[4], drive_names[8]])
         self.check_lv_exists(lv_name)
 
-        # Remove the smallest drive.
+        # Try to replace a drive in the already-clean array.
+        #with self.assertRaises(LvmRaidException):
+        #    LvmRaidExec(['replace',
+        #                 lv_name,
+        #                 drive_names[3]])
+
+        # Remove a drive that isn't in the array.
+        #with self.assertRaises(LvmRaidException):
+        #LvmRaidExec(['remove',
+        #             lv_name,
+        #             drive_names[2]])
+
+        # Remove the middle-sized drive.
         LvmRaidExec(['remove',
                      lv_name,
-                     drive_names[1]])
+                     drive_names[4]])
 
-        # Attempt to remove another drive.  This fails.
+        # Attempt to remove another drive.
+        # This fails because the array is already degraded.
         with self.assertRaises(LvmRaidException):
             LvmRaidExec(['remove',
                          lv_name,
-                         drive_names[2]])
+                         drive_names[0]])
 
-        # Try to replace the removed drive with a smaller one.  This fails.
+        # Try to replace the removed drive with one that is:
+        # - larger than the removed drive
+        # - smaller than the second-largest drive in the array
+        # - not the same size as any of the other arrays.
+        # This fails.
+        #LvmRaidExec(['replace',
+        #             lv_name,
+        #             drive_names[4]])
+
+        # Try to replace the removed drive with a smaller one.
+        # This fails because it can't make the array clean.
         with self.assertRaises(LvmRaidException):
             LvmRaidExec(['replace',
                          lv_name,
-                         drive_names[0]])
+                         drive_names[1]])
+
+        # Try to replace the removed drive with one that is:
+        # - larger than the removed drive
+        # - smaller than the largest drive in the array
+        # - but larger than the second-largest drive in the array
+        # - not the same size as any of the other arrays.
+        # This succeeds, and grows the array.
+        LvmRaidExec(['replace',
+                     lv_name,
+                     drive_names[6]])
 
 
 if __name__ == '__main__':

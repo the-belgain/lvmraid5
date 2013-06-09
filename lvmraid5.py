@@ -10,7 +10,6 @@
 # stable enough yet, or packaged in standard distro's.
 # TODO: make logging sane.
 # TODO: see why partprobe is necessary.
-# TODO: sort out use of globals.
 # TODO: use "mdadm --wait" to wait for resync.
 
 import argparse
@@ -30,7 +29,8 @@ def check_critical(condition, msg):
     """Check that a condition is true, exiting with error message if not."""
     if not condition:
         print(msg)
-        exit(1)
+        raise LvmRaidException(msg)
+
 
 def round_sigfigs(num, sig_figs, round_down=True):
     """Round to specified number of sigfigs."""
@@ -46,6 +46,16 @@ def round_sigfigs(num, sig_figs, round_down=True):
         ret_val -= unit_size
 
     return long(ret_val)
+
+
+class LvmRaidException(Exception):
+    """Base class for exceptions in this module."""
+    def __init__(self, msg):
+        self.msg = msg
+
+    def __str__(self):
+        return self.msg
+
 
 class LvmRaidBaseClass(object):
     """Base class which all other classes inherit from.
@@ -816,15 +826,10 @@ You can monitor their status by running "mdadm --detail <array_name>".""".format
         lv = self.find_or_create(LogicalVolume, self.args.lv)
         drive = self.find_or_create(HardDrive, self.args.drive_to_remove)
         
-        for partition in drive.partitions.values():
-            # It's OK to remove this drive if either it's already marked faulty,
-            # or the array is clean.
-            if partition.array is not None:
-                check_critical((partition.array.is_clean() or 
-                                partition.faulty()),
-                               'Cannot remove member {} from array {}.'
-                               .format(partition, partition.array))
-            
+        # Wait for the arrays to complete resync (this will exit if the arrays
+        # aren't clean or resycing).
+        lv.wait_for_resync_complete()
+
         # We're good to remove the drive.  Remove it from each array in turn.
         for partition in drive.partitions.values():
             for pv in lv.vg.pvs.values():
@@ -878,8 +883,7 @@ You can monitor their status by running "mdadm --detail <array_name>".""".format
         check_critical((new_drive.size() > largest_drive_size) or
                        (new_drive.size() in existing_drive_sizes),
                        """New drive capacity must either match one of the 
-                       existing drives, or be larger than all existing 
-                       drives.""")
+existing drives, or be larger than all existing drives.""")
 
         # TODO: Check that in non-grow mode, the drive is large enough to make
         # the array clean.
@@ -1032,5 +1036,7 @@ You can monitor their status by running "mdadm --detail <array_name>".""".format
     
 
 if __name__ == "__main__":
-    LvmRaidExec(sys.argv[1:])
-    
+    try:
+        LvmRaidExec(sys.argv[1:])
+    except LvmRaidException:
+        exit(1)

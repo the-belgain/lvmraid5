@@ -3,7 +3,7 @@
 import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from lvmraid5 import HardDrive, LvmRaidExec
+from lvmraid5 import HardDrive, LvmRaidExec, LvmRaidException
 import pexpect
 import subprocess
 import unittest
@@ -41,19 +41,23 @@ class LvmRaid5Test(unittest.TestCase):
             self.delete_array('/dev/md%d' % ii)
             self.delete_array('/dev/md%d' % (127-ii))
             
+        # Wipe the drives.
+        for drive in drive_names:
+            self.wipe_drive(drive)
+
+    def wipe_drive(self, drive):
+        """Wipe a drive completely."""
         # Wipe the partition superblocks.
-        for drive in drive_names:
-            for ii in range(5, 5 + num_arrays):
-                self.zero_superblock("%s%d" % (drive, ii))
-        
+        for ii in range(5, 5 + num_arrays):
+            self.zero_superblock("%s%d" % (drive, ii))
+
         # Remove any partitions from the existing drives.
-        for drive in drive_names:
-            self.delete_partitions(drive)
+        self.delete_partitions(drive)
 
     def delete_array(self, name):
         try:
             # Delete the PV.
-            subprocess.check_output(['pvremove', name])
+            subprocess.check_output(['pvremove', '--force', name])
         except subprocess.CalledProcessError:
             pass
         
@@ -191,5 +195,41 @@ class LvmRaid5Test2(LvmRaid5Test):
                       drive_names[3]])
 
         
+class LvmRaid5Test3(LvmRaid5Test):
+    """Failure cases for remove/replace.
+
+    - Check that a drive can't be removed when the array is degraded
+    - Check that a replacemenet drive can't be added if it doesn't match the
+    size of one of the existing drives.
+    """
+
+    def test(self):
+        # Prepare the test.
+        self.prepare()
+        
+        # Create an LvmRaidExec instance.
+        LvmRaidExec(['create',
+                     '--vg_name', vg_name] +
+                     drive_names[1:4])
+        self.check_lv_exists(lv_name)
+
+        # Remove the smallest drive.
+        LvmRaidExec(['remove',
+                     lv_name,
+                     drive_names[1]])
+
+        # Attempt to remove another drive.  This fails.
+        with self.assertRaises(LvmRaidException):
+            LvmRaidExec(['remove',
+                         lv_name,
+                         drive_names[2]])
+
+        # Try to replace the removed drive with a smaller one.  This fails.
+        with self.assertRaises(LvmRaidException):
+            LvmRaidExec(['replace',
+                         lv_name,
+                         drive_names[0]])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -217,10 +217,10 @@ class LvmRaid5Test3(LvmRaid5Test):
         self.check_lv_exists(lv_name)
 
         # Try to replace a drive in the already-clean array.
-        #with self.assertRaises(LvmRaidException):
-        #    LvmRaidExec(['replace',
-        #                 lv_name,
-        #                 drive_names[3]])
+        with self.assertRaises(LvmRaidException):
+            LvmRaidExec(['replace',
+                         lv_name,
+                         drive_names[3]])
 
         # Remove a drive that isn't in the array.
         #with self.assertRaises(LvmRaidException):

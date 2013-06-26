@@ -139,10 +139,18 @@ class LvmRaid5Test(unittest.TestCase):
         # Delete md arrays and their PVs.
         for ii in range(num_arrays):
             self.delete_array('/dev/md%d' % ii)
+            self.delete_array('/dev/md%d' % (127-ii))
             
         # Wipe the drives.
         for drive in drive_names:
             self.wipe_drive(drive)
+
+
+class LvmRaid5Test0(LvmRaid5Test):
+
+  def test(self):
+    """This one's a no-op: used to provide an easy cleanup method."""
+    pass
 
 
 class LvmRaid5Test1(LvmRaid5Test):

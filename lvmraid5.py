@@ -100,15 +100,17 @@ class LvmRaidBaseClass(object):
     def log(self, msg, level=logging.DEBUG):
         self.logger_adapter.log(level, msg)
         
-    def run_cmd(self, cmd):
+    def run_cmd(self, cmd, prompt=True):
         # Run the command.  TODO: capture output on failures.
         output = ""
         try:
+            if prompt:
+                self.maybe_prompt("""Running command '{}'""".format(" ".join(cmd)))
             output = subprocess.check_output(cmd,
                                              stderr=subprocess.STDOUT)
-            self.log("""Running command "{}":\n{}""".format(cmd, output))
+            self.log("""Ran command '{}':\n{}""".format(cmd, output))
         except subprocess.CalledProcessError:
-            self.log("""Command failed "{}":\n{}""".format(cmd, output))
+            self.log("""Command failed '{}':\n{}""".format(cmd, output))
             raise
         return output
     
@@ -116,6 +118,12 @@ class LvmRaidBaseClass(object):
         return pexpect.spawn(cmd,
                              timeout=5,
                              logfile=file('/tmp/lvmraid5_pexpect.log', 'a'))
+
+    def maybe_prompt(self, text):
+        if self.lvmexec.args.prompt:
+            check_critical(raw_input(text + """ - type 'OK' to proceed: """) == 'OK', "Aborted at user request.")
+        else:
+            self.log(text, level=logging.INFO)
 
 class HardDrive(LvmRaidBaseClass):
     """Represents a physical hard drive."""
@@ -135,7 +143,7 @@ class HardDrive(LvmRaidBaseClass):
         Expects the drive to have no existing partitions.
         
         """
-        self.log('Initialising partition table')
+        self.maybe_prompt("""Initializing partition table on drive {}""".format(self.name))
         fdisk = self.spawn_fdisk()
         fdisk.expect(HardDrive.fdisk_main_prompt_re)
         fdisk.sendline('p') # Print the partition table.
@@ -171,7 +179,7 @@ class HardDrive(LvmRaidBaseClass):
         Returns the new Partition object.
         
         """
-        self.log('Creating partition of size {}'.format(size))
+        self.maybe_prompt("""Creating partition of size {} on drive {}""".format(size, self.name))
         # Refresh the hard drive info.  This checks the partition table is
         # in the expected state.
         self.get_info()
@@ -316,7 +324,8 @@ class Partition(LvmRaidBaseClass):
         try:
             output = self.run_cmd(['mdadm',
                                    '--examine',
-                                   self.name])
+                                   self.name],
+                                   prompt=False)
             # array_name = Partition.raid_array_name_re.search(output).group[0]
             # self.array = RaidArray.find_or_create(array_name)
         except subprocess.CalledProcessError:
@@ -372,7 +381,7 @@ class LogicalVolume(LvmRaidBaseClass):
         
         """
         try:
-            output = self.run_cmd(["lvdisplay", self.name, "--units", "G"])
+            output = self.run_cmd(["lvdisplay", self.name, "--units", "G"], prompt=False)
             self.size = LogicalVolume.lv_size_re.search(output).group('size')
             m = LogicalVolume.vg_name_re.search(output)
             self.vg = self.find_or_create(VolumeGroup, m.group('name'))
@@ -430,7 +439,7 @@ class VolumeGroup(LvmRaidBaseClass):
         
         """
         try:
-            output = self.run_cmd(["vgdisplay", self.name, "--verbose"])
+            output = self.run_cmd(["vgdisplay", self.name, "--verbose"], prompt=False)
             m = VolumeGroup.pv_name_re.findall(output)
             for name in m:
                 self.pvs[name] = self.find_or_create(PhysicalVolume, name)
@@ -536,7 +545,7 @@ class RaidArray(LvmRaidBaseClass):
 
         # Get the info.
         try:
-            output = self.run_cmd(["mdadm", "--detail", self.name])
+            output = self.run_cmd(["mdadm", "--detail", self.name], prompt=False)
             for groups in RaidArray.members_re.findall(output):
                 self.members[groups[1]] = self.find_or_create(Partition, groups[1])
             # self.device_size = RaidArray.device_size_re.search(output).group('size')
@@ -652,9 +661,9 @@ class LvmRaidExec:
         
         parser = argparse.ArgumentParser(
             description='Helper utility for lvm and mdadm.')
-        parser.add_argument('-d', '--dry-run',
+        parser.add_argument('-p', '--prompt',
                             action='store_true',
-                            help="Read-only mode; only display information.")
+                            help="Prompt before performing any detructive actions.")
         subparsers = parser.add_subparsers()
         
         # Add parse for the add command.
@@ -999,7 +1008,7 @@ larger than all existing arrays.""")
         output = subprocess.check_output(cmd,
                                          stderr=subprocess.STDOUT)
         self.log(output)
-        return output    
+        return output
     
     def setup_logging(self):
         """Configure loggers for the program at start of day."""

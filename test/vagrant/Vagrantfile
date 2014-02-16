@@ -12,29 +12,21 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   # Share the top-level directory of the project with the VM.
   config.vm.synced_folder "../../", "/home/vagrant/lvmraid5"
 
-  # Provider-specific configuration so you can fine-tune various
-  # backing providers for Vagrant. These expose provider-specific options.
-  #
-  # View the documentation for the provider you're using for more
-  # information on available options.
-  #
   # For now this vagrant file only supports VirtualBox.
   config.vm.provider :virtualbox do |vb|
-    # Create and attach disk images.
     ii = 1
-    [160, 160, 320, 320, 750, 750, 1500, 1500].each do |size|
+    [160, 160, 320, 320, 750, 750, 1500, 1500, 2000, 2000].each do |size|
+      # If we don't yet have this virtual disk image, create it.
       unless File.exist?("lvmraid5_drive_#{ii}.vdi")
         vb.customize ['createhd', '--filename', "lvmraid5_drive_#{ii}", '--size', size]
       end
+      # Tell VirtualBox to attach the disk image to this VM.
       vb.customize ['storageattach', :id, '--storagectl', 'SATAController', '--port', ii, '--device', 0, '--type', 'hdd', '--medium', "lvmraid5_drive_#{ii}.vdi"]
       ii = ii + 1
     end
   end
 
-  # Enable provisioning with Puppet stand alone.  Puppet manifests
-  # are contained in a directory path relative to this Vagrantfile.
-  # You will need to create the manifests directory and a manifest in
-  # the file base.pp in the manifests_path directory.
+  # Enable provisioning with Puppet stand alone.
   config.vm.provision :puppet do |puppet|
     puppet.manifests_path = "manifests"
     puppet.manifest_file  = "default.pp"
